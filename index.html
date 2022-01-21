@@ -1,0 +1,228 @@
+<html>
+<head>
+<style>
+html {
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 80px 0;
+  line-height: 1.5em;
+}
+h2 {
+  margin-top: 70px;
+}
+h3 {
+  margin-top: 50px;
+}
+table {
+  border-collapse: collapse;
+}
+td, th {
+  padding: 0.5rem;
+  border: 1px #aaa solid;
+}
+a[href^="http"]::after {
+  content: "⧉";
+}
+a[href^="#"] {
+  text-decoration: none;
+  border-bottom: 1px blue dotted;
+}
+pre {
+  white-space: break-spaces;
+}
+pre, code {
+  background-color: #e8e8e8;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+</style>
+</head>
+<script crossorigin src="https://unpkg.com/mermaid@8.13.4/dist/mermaid.min.js"></script>
+<body>
+
+<h1 id="ssb-room-broker-authentication">SSB Room Broker Authentication</h1>
+<p><strong>Revision:</strong> DRAFT. DO NOT IMPLEMENT.</p>
+<p><strong>Author:</strong> Andre Medeiros <a href="mailto:contact@staltz.com">contact@staltz.com</a></p>
+<p><strong>License:</strong> This work is licensed under a <a href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.</p>
+<h2 id="the-problem-summarized">The problem, summarized</h2>
+<p>By default, connections from unknown peers are forbidden by <a href="https://github.com/staltz/ssb-conn-firewall/">ssb-conn-firewall</a>. This is good, for safety, but it makes onboarding more difficult.</p>
+<p>When you <strong>invite people</strong> to the network, you want them to be <strong>pre-approved</strong> and open an exception in the firewall, so they can freely connect with you.</p>
+<p>When you <strong>install a new SSB app</strong>, you need it to <strong>bootstrap its database</strong> from your existing SSB app, so that the new app has "your content" (or at least social graph) from the beginning.</p>
+<h2 id="the-solution-summarized">The solution, summarized</h2>
+<p>A remote room client (either an invited friend, or a new SSB app you own), adds some <strong>query params to your <em>room alias</em></strong>, <code>permissions</code> or <code>token</code>, and then the room will broker these query params to you, such that you can then authorize the connection.</p>
+<p>The query params are (either one, but not both simultaneously):</p>
+<ul>
+<li><code>permissions</code>: a list of priviledges the remote peer is asking for, such as
+<ul>
+<li>Creating an exception in the firewall to allow the connection</li>
+<li>Creating a new subfeed under a metafeed on the alias owner</li>
+<li>Making the alias owner follow the remote peer</li>
+</ul>
+</li>
+<li><code>token</code>: a sequence of bytes created by the alias owner that grants the remote peer with pre-specified permissions</li>
+<li><code>pin</code>: optional 4-number code used to informally identify the remote peer, similar to Bluetooth pairing codes</li>
+</ul>
+<p>In general, either one of these two cases apply:</p>
+<ul>
+<li>The alias owner can <em>pre-approve</em> some permissions and create a token for those permissions
+<ul>
+<li><code>https://${alias}.${domain}/?token=${T}</code></li>
+</ul>
+</li>
+<li>The remote peer can <em>ask</em> for some permissions from the alias owner
+<ul>
+<li><code>https://${alias}.${domain}/?permissions=${commaSeparatedPermissions}&#x26;pin=4321</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="use-case-inviting-a-friend">Use case: inviting a friend</h3>
+<h4 id="pre-approve-some-permissions-and-create-token">Pre-approve some permissions and create token</h4>
+<div class="mermaid">
+  sequenceDiagram
+  actor A as Alias owner
+  actor B as Friend
+
+  A->>A: Create token T with permissions<br/>"connect" and "followback"<br/>and persist it locally
+  A->>B: `https://{alias}.{domain}/?token={T}
+</div>
+<h4 id="consuming-the-tokenized-alias">Consuming the tokenized alias</h4>
+<div class="mermaid">
+  sequenceDiagram
+  actor A as Alias owner
+  participant R as Room
+  actor B as Friend
+
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?token={T}`
+  R-->>-B: multiserverAddress, roomId, userId, token
+  opt Recommended
+   B->>B: follows userId
+  end
+
+  B->>+R: (muxrpc async) `brokerAuth.claim(userId, token)`
+
+  alt Alias owner is offline
+    R-->>B: respond to brokerAuth.claim with `false`
+  else Alias owner is online
+    R->>+A: brokerAuth.claim(friendId, token)
+    A->>A: Confirms that `token` is<br/>found locally with permissions<br/>"connect" and "followback"
+    A->>A: "connect" permission creates<br/>an exception in the firewall
+    A->>A: "followback" permission publishes<br/>a follow message for friendId
+    A-->>-R: respond brokerAuth.claim with `true`
+    R-->>-B: respond brokerAuth.claim with `true`
+
+    note over A,B: Friend establishes tunneled connection with Alias owner
+  end
+</div>
+<p>Note, one variant of this use case is to also include the invited friend into the same room servers that the alias owner is in too, using the <code>roomMembership</code> permission.</p>
+<h3 id="use-case-subapp-bootstrap">Use case: subapp bootstrap</h3>
+<p>New app wants to be a subfeed of a metafeed belonging to the alias owner, and wants that subfeed to be added as a member in rooms.</p>
+<p>Thus the permissions are</p>
+<ul>
+<li><code>connect</code></li>
+<li><code>subfeed</code> (note, this may require an additional query param to specify the details for the subfeed)</li>
+<li><code>roomMembership</code> (may also require additional query params)</li>
+</ul>
+<div class="mermaid">
+  sequenceDiagram
+  actor A as Alias owner
+  participant R as Room
+  actor B as New app
+
+  note over B: Ask user to input alias URL
+  B->>B: `{alias}.{domain}`
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?pin=1234&<br/>permissions=connect,subfeed,roomMembership`
+  R-->>-B: multiserverAddress, roomId, userId
+
+  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, pin)`
+
+  loop Until alias owner is online
+    R->>R: wait
+  end
+  R->>+A: brokerAuth.request(newAppId, permissions, pin)
+  note over A: Ask user to confirm whether<br/>"New app" can get these permissions
+  alt User disallows
+    A-->>R: respond brokerAuth.request with `false`
+    R-->>B: respond brokerAuth.request with `false`
+  else User allows
+    A->>A: "connect" permission creates<br/>an exception in the firewall
+    A->>A: "subfeed" permission creates<br/>a new subfeed under a metafeed
+    A->>A: "roomMembership" permission registers<br/>the new app as member in some rooms
+    A-->>-R: respond brokerAuth.request with `true`
+    R-->>-B: respond brokerAuth.request with `true`
+
+    note over A,B: New app initiates tunneled connection with Alias owner
+
+    A->>+B: (muxrpc async) `brokerAuth.grantSubfeed(details)`
+    B-->>-A: thanks
+
+    A->>+B: (muxrpc async) `brokerAuth.grantRoomMembership(details)`
+    B-->>-A: thanks
+  end
+</div>
+<h3 id="use-case-fusion-dance">Use case: fusion dance</h3>
+<p>New app and old app want to link each other as the same "person".</p>
+<p>Thus the permissions are:</p>
+<ul>
+<li><code>connect</code></li>
+<li><code>fusion</code></li>
+</ul>
+<div class="mermaid">
+  sequenceDiagram
+  actor A as Alias owner
+  participant R as Room
+  actor B as New app
+
+  note over B: Ask user to input alias URL
+  B->>B: `{alias}.{domain}`
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?name=New app&<br/>permissions=connect,fusion`
+  R-->>-B: multiserverAddress, roomId, userId
+
+  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, null)`
+
+  loop Until alias owner is online
+    R->>R: wait
+  end
+  R->>+A: brokerAuth.request(friendId, permissions, null)
+  note over A: Ask user to confirm whether<br/>"New app" can get these permissions
+  alt User disallows
+    A-->>R: respond brokerAuth.request with `false`
+    R-->>B: respond brokerAuth.request with `false`
+  else User allows
+    A->>A: "connect" permission creates<br/>an exception in the firewall
+    A->>A: "fusion" permission publishes<br/>`fusion/init` and `fusion/invite` for friendId
+    A-->>-R: respond brokerAuth.request with `true`
+    R-->>-B: respond brokerAuth.request with `true`
+
+    note over A,B: New app initiates tunneled connection with Alias owner,<br/>and they replicate with each other the following fusion messages
+
+    B->>B: publish `fusion/consent`
+    A->>A: publish `fusion/entrust`
+    B->>B: publish `fusion/proof-of-key`
+  end
+</div>
+<h2 id="security-considerations">Security considerations</h2>
+<h3 id="spam-on-brokerauthrequest">Spam on <code>brokerAuth.request()</code></h3>
+<p>A malicious remote peer could spam the alias owner with several <code>brokerAuth.request()</code> calls which in turn spam the end-user with manual approval requests. To mitigate that, there are two tactics: (1) the alias owner can block the SSB ID for that spammy remote peer, (2) the room can rate-limit or ban remote peers.</p>
+<p>On the second tactic (room server using rate limiting), the remote peer can never know if a <code>brokerAuth.request()</code> call returned <code>false</code> due to the alias owner being <em>offline</em> or due to the alias owner rejecting it, but the room always knows this information. Thus the room could detect that an alias owner rejected <code>claim</code> calls several times for a specific remote peer (identified by its IP address), and thus ban or rate limit that remote peer by IP address or SSB ID, or both.</p>
+<h2 id="what-about-off-grid-use-cases">What about off-grid use cases?</h2>
+<p>This proposal heavily relies on room servers over the internet, so there is no solution given for subapp bootstrapping or fusion identity in a local area network, or even on the same device (say, entirely isolated from other devices).</p>
+<p>I believe we should make other proposals that are similar to broker auth, but meant primarily for local area network, or primarily for same-device auth.</p>
+<p>For local area network authentication, we could replace alias URLs with local-network domains such as <code>.local</code> or <code>.home.arpa</code>. For instance, for subapp bootstrapping in the same LAN, the old app could have an address such as <code>$SSBID.local</code>, the new app can dial that address, and authentication via muxrpc can proceed.</p>
+<p>For same-device authentication, either we can use an overkill such as room broker auth (or LAN auth), or we can use a OS-specific solution such as Unix sockets or others.</p>
+<h1 id="appendix">Appendix</h1>
+<h2 id="list-of-new-muxrpc-apis">List of new muxrpc APIs</h2>
+<ul>
+<li>async
+<ul>
+<li><code>brokerAuth.claim(ssbID, token)</code></li>
+<li><code>brokerAuth.request(ssbID, permissions, pin)</code></li>
+<li><code>brokerAuth.grantRoomMembership(details)</code></li>
+<li><code>brokerAuth.grantSubfeed(details)</code></li>
+</ul>
+</li>
+</ul>
+
+
+</body>
+</html>
