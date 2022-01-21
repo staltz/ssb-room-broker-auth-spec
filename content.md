@@ -180,7 +180,7 @@ sequenceDiagram
 
 A malicious remote peer could spam the alias owner with several `brokerAuth.request()` calls which in turn spam the end-user with manual approval requests. To mitigate that, there are two tactics: (1) the alias owner can block the SSB ID for that spammy remote peer, (2) the room can rate-limit or ban remote peers.
 
-On the second tactic (room server using rate limiting), the remote peer can never know if a `brokerAuth.request()` call returned `false` due to the alias owner being *offline* or due to the alias owner rejecting it, but the room always knows this information. Thus the room could detect that an alias owner rejected `claim` calls several times for a specific remote peer (identified by its IP address), and thus ban or rate limit that remote peer by IP address or SSB ID, or both.
+On the second tactic (room server using rate limiting), the remote peer can never know if a `brokerAuth.request()` call returned `false` due to the alias owner being *offline* or due to the alias owner rejecting it, but the room always knows this information. Thus the room could detect that an alias owner rejected `brokerAuth.request()` calls several times for a specific remote peer (identified by its IP address), and thus ban or rate limit that remote peer by IP address or SSB ID, or both.
 
 ## What about off-grid use cases?
 
