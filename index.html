@@ -175,22 +175,22 @@ pre, code {
 
   note over B: Ask user to input alias URL
   B->>B: `{alias}.{domain}`
-  B->>+R: (http) <br/>`https://{alias}.{domain}/?name=New app&<br/>permissions=connect,fusion`
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?pin=1001&<br/>permissions=connect,fusion`
   R-->>-B: multiserverAddress, roomId, userId
 
-  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, null)`
+  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, pin)`
 
   loop Until alias owner is online
     R->>R: wait
   end
-  R->>+A: brokerAuth.request(friendId, permissions, null)
+  R->>+A: brokerAuth.request(newAppId, permissions, pin)
   note over A: Ask user to confirm whether<br/>"New app" can get these permissions
   alt User disallows
     A-->>R: respond brokerAuth.request with `false`
     R-->>B: respond brokerAuth.request with `false`
   else User allows
     A->>A: "connect" permission creates<br/>an exception in the firewall
-    A->>A: "fusion" permission publishes<br/>`fusion/init` and `fusion/invite` for friendId
+    A->>A: "fusion" permission publishes<br/>`fusion/init` and `fusion/invite` for newAppId
     A-->>-R: respond brokerAuth.request with `true`
     R-->>-B: respond brokerAuth.request with `true`
 
