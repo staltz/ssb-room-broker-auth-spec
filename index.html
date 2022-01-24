@@ -66,7 +66,7 @@ pre, code {
   actor B as Friend
 
   A->>A: Create token T with permissions<br/>"connect" and "followback"<br/>and persist it locally
-  A->>B: `https://{alias}.{domain}/♯{T}
+  A->>B: `https://{alias}.{domain}/♯{token}
 </div>
 <h4 id="consuming-the-tokenized-alias">Consuming the tokenized alias</h4>
 <div class="mermaid">
@@ -75,13 +75,13 @@ pre, code {
   participant R as Room
   actor B as Friend
 
-  alt Friend opens `https://{alias}.{domain}/♯{T}` in their browser
-    B->>+R: (http) <br/>`https://{alias}.{domain}/♯{T}`
+  alt Friend opens `https://{alias}.{domain}/♯{token}` in their browser
+    B->>+R: (http) <br/>`https://{alias}.{domain}/♯{token}`
     R->>R: Browser-side JS extracts<br/>`token` from URI fragment
     R-->>-B: SSB URI with multiserverAddress, roomId, userId, token
     B->>B: Opens SSB app
-  else Friend inputs `https://{alias}.{domain}/♯{T}` in their SSB app
-    B->>B: Extracts `token` from URI fragment
+  else Friend inputs `https://{alias}.{domain}/♯{token}` in their SSB app
+    B->>B: Extracts `token` from the URL
     B->>+R: (http) <br/>`https://{alias}.{domain}?encoding=json`
     R-->>-B: JSON with multiserverAddress, roomId, userId
   end
