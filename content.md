@@ -17,24 +17,16 @@ When you **install a new SSB app**, you need it to **bootstrap its database** fr
 
 ## The solution, summarized
 
-A remote room client (either an invited friend, or a new SSB app you own), adds some **query params to your _room alias_**, `permissions` or `token`, and then the room will broker these query params to you, such that you can then authorize the connection.
+A remote room client (either an invited friend, or a new SSB app you own) can connect freely to the room server, and upon connection sends some additional data to the room via the muxrpc APIs `brokerAuth.request()` or `brokerAuth.claim()`, which the room will then broker to the alias owner, such that they can then authorize the tunneled connection from remote room client to alias owner.
 
-The query params are (either one, but not both simultaneously):
+There are two cases:
 
-- `permissions`: a list of priviledges the remote peer is asking for, such as
-  - Creating an exception in the firewall to allow the connection
-  - Creating a new subfeed under a metafeed on the alias owner
-  - Making the alias owner follow the remote peer
-- `token`: a sequence of bytes created by the alias owner that grants the remote peer with pre-specified permissions
-- `pin`: optional 4-number code used to informally identify the remote peer, similar to Bluetooth pairing codes
+1. The remote peer is asking for the alias owner to grant some specific permissions
+2. The alias owner has pre-approved some permissions and has given through a 3rd party channel (e.g. via instant messengers or email) a token to the remote peer
 
-In general, either one of these two cases apply:
+In the first case, the muxrpc API used is `brokerAuth.request()`, and in the second case it is `brokerAuth.claim()`. Unlike with tunneled connections, the arguments given to these muxrpc APIs have to be encrypted to the alias owner and signed by the remote peer, to prevent the room from tampering them (which would effectively let the room authenticate whoever they wanted to).
 
-- The alias owner can *pre-approve* some permissions and create a token for those permissions
-  - `https://${alias}.${domain}/?token=${T}`
-- The remote peer can *ask* for some permissions from the alias owner
-  - `https://${alias}.${domain}/?permissions=${commaSeparatedPermissions}&pin=4321`
-
+In the case of "claiming" a token, the token is attached to the alias URL in the URI fragment in order to allow only the room's browser-side JavaScript to detect it, not the room server itself. For example, `https://{alias}.{domain}/#{token}`
 
 ### Use case: inviting a friend
 
@@ -46,7 +38,7 @@ sequenceDiagram
   actor B as Friend
 
   A->>A: Create token T with permissions<br/>"connect" and "followback"<br/>and persist it locally
-  A->>B: `https://{alias}.{domain}/?token={T}
+  A->>B: `https://{alias}.{domain}/♯{T}
 ```
 
 #### Consuming the tokenized alias
@@ -57,23 +49,36 @@ sequenceDiagram
   participant R as Room
   actor B as Friend
 
-  B->>+R: (http) <br/>`https://{alias}.{domain}/?token={T}`
-  R-->>-B: multiserverAddress, roomId, userId, token
-  opt Recommended
-   B->>B: follows userId
+  alt Friend opens `https://{alias}.{domain}/♯{T}` in their browser
+    B->>+R: (http) <br/>`https://{alias}.{domain}/♯{T}`
+    R->>R: Browser-side JS extracts<br/>`token` from URI fragment
+    R-->>-B: SSB URI with multiserverAddress, roomId, userId, token
+    B->>B: Opens SSB app
+  else Friend inputs `https://{alias}.{domain}/♯{T}` in their SSB app
+    B->>B: Extracts `token` from URI fragment
+    B->>+R: (http) <br/>`https://{alias}.{domain}?encoding=json`
+    R-->>-B: JSON with multiserverAddress, roomId, userId
   end
 
-  B->>+R: (muxrpc async) `brokerAuth.claim(userId, token)`
+  opt Recommended
+   B->>B: Follows userId
+  end
+
+  B->>B: Encrypt `=broker-auth-token:{token}` to the<br/>public key of the alias owner, thus `boxedToken`
+  B->>B: Sign `boxedToken` with my private key,<br/>creating `sig`
+  B->>+R: (muxrpc async) `brokerAuth.claim(userId, boxedToken, sig)`
 
   alt Alias owner is offline
-    R-->>B: respond to brokerAuth.claim with `false`
+    R-->>B: Respond to brokerAuth.claim with `false`
   else Alias owner is online
-    R->>+A: brokerAuth.claim(friendId, token)
+    R->>+A: brokerAuth.claim(friendId, boxedToken, sig)
+    A->>A: Confirm that `sig` is from `friendId`
+    A->>A: Decrypt `boxedToken` to get `token`
     A->>A: Confirms that `token` is<br/>found locally with permissions<br/>"connect" and "followback"
     A->>A: "connect" permission creates<br/>an exception in the firewall
     A->>A: "followback" permission publishes<br/>a follow message for friendId
-    A-->>-R: respond brokerAuth.claim with `true`
-    R-->>-B: respond brokerAuth.claim with `true`
+    A-->>-R: Respond brokerAuth.claim with `true`
+    R-->>-B: Respond brokerAuth.claim with `true`
 
     note over A,B: Friend establishes tunneled connection with Alias owner
   end
@@ -99,33 +104,38 @@ sequenceDiagram
 
   note over B: Ask user to input alias URL
   B->>B: `{alias}.{domain}`
-  B->>+R: (http) <br/>`https://{alias}.{domain}/?pin=1234&<br/>permissions=connect,subfeed,roomMembership`
-  R-->>-B: multiserverAddress, roomId, userId
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?encoding=json`
+  R-->>-B: JSON with multiserverAddress, roomId, userId
+  B->>B: permissions = `connect,subfeed,roomMembership`
+  B->>B: Encrypt `=broker-auth-permissions:{permissions}` to the<br/>public key of the alias owner, thus `boxedPermissions`
+  B->>B: Sign `boxedPermissions` with my private key,<br/>creating `sig`
 
-  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, pin)`
+  B->>+R: (muxrpc async) `brokerAuth.request(userId, boxedPermissions, sig)`
 
   loop Until alias owner is online
     R->>R: wait
   end
-  R->>+A: brokerAuth.request(newAppId, permissions, pin)
-  note over A: Ask user to confirm whether<br/>"New app" can get these permissions
+  R->>+A: brokerAuth.request(newAppId, boxedPermissions, sig)
+  A->>A: Confirm that `sig` is from `friendId`
+  A->>A: Decrypt `boxedPermissions` to get `permissions`
+  note over A: Ask user to confirm whether<br/>`newAppId` can get these permissions
+
   alt User disallows
-    A-->>R: respond brokerAuth.request with `false`
-    R-->>B: respond brokerAuth.request with `false`
+    A-->>R: Respond brokerAuth.request with `false`
+    R-->>B: Respond brokerAuth.request with `false`
   else User allows
     A->>A: "connect" permission creates<br/>an exception in the firewall
     A->>A: "subfeed" permission creates<br/>a new subfeed under a metafeed
     A->>A: "roomMembership" permission registers<br/>the new app as member in some rooms
-    A-->>-R: respond brokerAuth.request with `true`
-    R-->>-B: respond brokerAuth.request with `true`
+    A-->>-R: Respond brokerAuth.request with `true`
+    R-->>-B: Respond brokerAuth.request with `true`
 
     note over A,B: New app initiates tunneled connection with Alias owner
 
-    A->>+B: (muxrpc async) `brokerAuth.grantSubfeed(details)`
-    B-->>-A: thanks
+    A->>A: `details` contains data regarding<br/>permissions `subfeed` and<br/>`roomMembership`
 
-    A->>+B: (muxrpc async) `brokerAuth.grantRoomMembership(details)`
-    B-->>-A: thanks
+    A->>+B: (muxrpc async) `brokerAuth.grant(details)`
+    B-->>-A: true
   end
 ```
 
@@ -147,24 +157,31 @@ sequenceDiagram
 
   note over B: Ask user to input alias URL
   B->>B: `{alias}.{domain}`
-  B->>+R: (http) <br/>`https://{alias}.{domain}/?pin=1001&<br/>permissions=connect,fusion`
-  R-->>-B: multiserverAddress, roomId, userId
+  B->>+R: (http) <br/>`https://{alias}.{domain}/?encoding=json`
+  R-->>-B: JSON with multiserverAddress, roomId, userId
+  B->>B: permissions = `connect,fusion`
+  B->>B: Encrypt `=broker-auth-permissions:{permissions}` to the<br/>public key of the alias owner, thus `boxedPermissions`
+  B->>B: Sign `boxedPermissions` with my private key,<br/>creating `sig`
 
-  B->>+R: (muxrpc async) `brokerAuth.request(userId, permissions, pin)`
+  B->>+R: (muxrpc async) `brokerAuth.request(userId, boxedPermissions, sig)`
 
   loop Until alias owner is online
     R->>R: wait
   end
-  R->>+A: brokerAuth.request(newAppId, permissions, pin)
-  note over A: Ask user to confirm whether<br/>"New app" can get these permissions
+
+  R->>+A: brokerAuth.request(newAppId, boxedPermissions, sig)
+  A->>A: Confirm that `sig` is from `friendId`
+  A->>A: Decrypt `boxedPermissions` to get `permissions`
+  note over A: Ask user to confirm whether<br/>`newAppId` can get these permissions
+
   alt User disallows
-    A-->>R: respond brokerAuth.request with `false`
-    R-->>B: respond brokerAuth.request with `false`
+    A-->>R: Respond brokerAuth.request with `false`
+    R-->>B: Respond brokerAuth.request with `false`
   else User allows
     A->>A: "connect" permission creates<br/>an exception in the firewall
     A->>A: "fusion" permission publishes<br/>`fusion/init` and `fusion/invite` for newAppId
-    A-->>-R: respond brokerAuth.request with `true`
-    R-->>-B: respond brokerAuth.request with `true`
+    A-->>-R: Respond brokerAuth.request with `true`
+    R-->>-B: Respond brokerAuth.request with `true`
 
     note over A,B: New app initiates tunneled connection with Alias owner,<br/>and they replicate with each other the following fusion messages
 
@@ -197,7 +214,6 @@ For same-device authentication, either we can use an overkill such as room broke
 ## List of new muxrpc APIs
 
 - async
-  - `brokerAuth.claim(ssbID, token)`
-  - `brokerAuth.request(ssbID, permissions, pin)`
-  - `brokerAuth.grantRoomMembership(details)`
-  - `brokerAuth.grantSubfeed(details)`
+  - `brokerAuth.claim(ssbID, boxedToken, sig)`
+  - `brokerAuth.request(ssbID, boxedPermissions, sig)`
+  - `brokerAuth.grant(details)`
